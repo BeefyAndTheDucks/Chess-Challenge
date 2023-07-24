@@ -25,16 +25,16 @@ public class MyBot : IChessBot
         board = gameBoard; // Cache board
 
         if (timer.MillisecondsRemaining > abortSearchTimeLeftMillis)
-            RegularSearch(5, 0, negativeInfinity, positiveInfinity, false, timer);
+            Search(5, 0, negativeInfinity, positiveInfinity, false, timer);
 
         if (timer.MillisecondsRemaining <= abortSearchTimeLeftMillis)
-            RegularSearch(4, 0, negativeInfinity, positiveInfinity, InsufficentMaterial(board.IsWhiteToMove) || timer.MillisecondsRemaining < lookForDrawTimeLeftMillis, timer);
+            Search(4, 0, negativeInfinity, positiveInfinity, InsufficentMaterial(board.IsWhiteToMove) || timer.MillisecondsRemaining < lookForDrawTimeLeftMillis, timer);
         return moveToPlay;
     }
 
     public MyBot()
     {
-        // Init some settings
+        // -- SETTINGS -- \\
         immediateMateScore = 100000;
         positiveInfinity = 9999999;
         negativeInfinity = -positiveInfinity;
@@ -42,13 +42,8 @@ public class MyBot : IChessBot
         abortSearchTimeLeftMillis = 20000;
         lookForDrawTimeLeftMillis = 10000;
     }
-
-    private int Evaluate(bool white)
-    {
-        var eval = CountMaterial(true) - CountMaterial(false);
-
-        return eval * (white ? 1 : -1);
-    }
+    
+    
 
     private int CountMaterial(bool white) =>
         GetPieceCount(Pawn, white) * 100 +
@@ -72,7 +67,7 @@ public class MyBot : IChessBot
         return false;
     }
 
-    private int RegularSearch(int depth, int plyFromRoot, int alpha, int beta, bool findDraw, Timer timer)
+    private int Search(int depth, int plyFromRoot, int alpha, int beta, bool findDraw, Timer timer)
     {
         if (plyFromRoot == 0)
             searchStartMillisRemaining = timer.MillisecondsRemaining;
@@ -114,7 +109,7 @@ public class MyBot : IChessBot
         foreach (var move in moves)
         {
             board.MakeMove(move);
-            int eval = -RegularSearch(depth - 1, plyFromRoot + 1, -beta, -alpha, findDraw, timer);
+            int eval = -Search(depth - 1, plyFromRoot + 1, -beta, -alpha, findDraw, timer);
             board.UndoMove(move);
 
             // Move was *too* good, so opponent won't allow this position to be reached
@@ -136,7 +131,7 @@ public class MyBot : IChessBot
         return alpha;
     }
 
-    // Search capture moves until a 'quiet' position is reached.
+    /// Search capture moves until a 'quiet' position is reached.
     private int QuiescenceSearch(int alpha, int beta)
     {
         int eval = Evaluate(board.IsWhiteToMove);
@@ -191,93 +186,115 @@ public class MyBot : IChessBot
 
         return score;
     }
-}
 
-// -- CHAT AREA -- \\
-/*
-We can also chat like this (with comments)
-There is a chat on the right side
-alright let me get the code
-looks nice
-You can paste your Alpha-beta code
-hold on let me get my mouse    sure
-code looks nice
-alright this is the draw bot right?
-yeah - also nice bot name xD
-We could submit it under "DrawBot"
-yeah that's a good name
-sebastion is accepting intersting bots
-yeah - he might feature it
-so, how do we incourage a draw
-I was thinking Repetition or Fiftymoverule
-well first we gotta make the eval max when a draw happens
-Ill make the impossible scenario detection
-what's that/?
-the code that detects if there is no way the bot can win
-can't we do that with a simple search
-yeah, but that might use a lot of tokens...
-true, mabye we can enforce trades
-just so it's harder for both bots to mate, yeah excatly
-alright, do we work on eval? Sure
-thats the best way we can go about it
-since it wont take up that much time
-let me paste my eval and make tweaks
-alright, I will detect insuff. material then
-Also - we could give squares bonusses based on each piece - like in the first chess episode
-we could also check if there is "insufficient material"
-*/
-
-//Code
-/*
-//This code was from "Algorithms Explained – minimax and alpha-beta pruning" by Sebastian Lague
-    public int MinMax(Board board, Timer timer, int depth, int alpha, int beta, bool maximizingPlayer)
+    private int Evaluate(bool white)
     {
-        //int evaluation = 0;
+        var whiteMaterial = CountMaterial(true);
+        var blackMaterial = CountMaterial(false);
 
-        Move[] moves = board.GetLegalMoves();
-        if (depth == 0 || board.IsInCheckmate() || board.IsDraw())
-        {
-            return Evaluate(board, timer);
-        }
-        if (maximizingPlayer)
-        {
-            int maxEval = -2147483647;
-            foreach (Move currentMove in moves)
-            {
+        var whiteMaterialWithoutPawns = whiteMaterial - GetPieceCount(Pawn, true) * 100;
+        var blackMaterialWithoutPawns = blackMaterial - GetPieceCount(Pawn, false) * 100;
 
-                board.MakeMove(currentMove);
-                
-                
-                int evaluation = MinMax(board, timer, depth - 1, alpha, beta, false);
-                board.UndoMove(currentMove);
-                maxEval = Math.Max(maxEval, evaluation);
-                alpha = Math.Max(alpha, evaluation);
-                if (beta <= alpha) 
-                {
-                   break;
-                }
-            }
-            
-            return maxEval;
-        }
-        else 
-        {
-            int minEval = 2147483647;
-            foreach (Move currentMove in moves)
-            {
-                board.MakeMove(currentMove);
-                int evaluation = MinMax(board, timer, depth - 1, alpha, beta, true);
-                board.UndoMove(currentMove);
-                minEval = Math.Min(minEval, evaluation);
-                beta = Math.Min(beta, evaluation);
-                if (beta <= alpha)
-                {
-                   break;
-                }
-            }
-            
-            return minEval;
-        }
-        return 0;
+        var whiteEval = whiteMaterial + EvaluatePieceSquareTables(true, EndgamePhaseWeight(whiteMaterialWithoutPawns));
+        var blackEval = blackMaterial + EvaluatePieceSquareTables(false, EndgamePhaseWeight(blackMaterialWithoutPawns)); // OPTIMIZE TOKENS HERE
+
+        var eval = whiteEval - blackEval; 
+        return eval * ((board.IsWhiteToMove) ? 1 : -1);
     }
-*/
+
+    private float EndgamePhaseWeight(int materialCountWithoutPawns) => 1 - Min(1, materialCountWithoutPawns * 0.0003f);
+
+    private int EvaluatePieceSquareTables(bool white, float endgamePhaseWeight) => 
+            EvaluatePieceSquareTable(pawnsBonusSqaures, board.GetPieceList(Pawn, white), white) + 
+            EvaluatePieceSquareTable(knightsBonusSqaures, board.GetPieceList(Knight, white), white) +
+            EvaluatePieceSquareTable(bishopsBonusSqaures, board.GetPieceList(Bishop, white), white) +
+            EvaluatePieceSquareTable(rooksBonusSqaures, board.GetPieceList(Rook, white), white) +
+            EvaluatePieceSquareTable(queensBonusSqaures, board.GetPieceList(Queen, white), white) + 
+            (int)(ReadPieceSquareTable(kingBonusSqaures, board.GetKingSquare(white), white) * (1 - endgamePhaseWeight));
+    
+    private int EvaluatePieceSquareTable(int[] table, PieceList pieceList, bool isWhite)
+    {
+        var value = 0;
+        for (int i = 0; i < pieceList.Count; i++)
+            value += ReadPieceSquareTable(table, pieceList[i].Square, isWhite);
+
+        return value;
+    }
+
+    private int ReadPieceSquareTable(int[] table, Square square, bool isWhite)
+    {
+        var squareIndex = square.Index;
+        
+        if (isWhite) // Below equation taken from discord
+            squareIndex ^= 0b111000; // Flip the table upside down if we are white (i think lol)
+
+        // Below equation taken from discord
+        return table[(square.File > 3 ? square.File ^ 7 : square.File) + (squareIndex / 8) * 4];
+    }
+
+    public readonly int[] pawnsBonusSqaures = {
+            0,  0,  0,  0, 
+            50, 50, 50, 50,
+            10, 10, 20, 30,
+            5,  5, 10, 25, 
+            0,  0,  0, 20, 
+            5, -5,-10,  0, 
+            5, 10, 10,-20,
+            0,  0,  0,  0, 
+    };
+    
+    public readonly int[] knightsBonusSqaures = {
+            -50,-40,-30,-30,
+            -40,-20,  0,  0,
+            -30,  0, 10, 15,
+            -30,  5, 15, 20,
+            -30,  0, 15, 20,
+            -30,  5, 10, 15,
+            -40,-20,  0,  5,
+            -50,-40,-30,-30,
+    };
+
+    public readonly int[] bishopsBonusSqaures = {
+            -20,-10,-10,-10,
+            -10,  0,  0,  0,
+            -10,  0,  5, 10,
+            -10,  5,  5, 10,
+            -10,  0, 10, 10,
+            -10, 10, 10, 10,
+            -10,  5,  0,  0,
+            -20,-10,-10,-10,
+    };
+
+    public readonly int[] rooksBonusSqaures = {
+            0,  0,  0,  0, 
+            5, 10, 10, 10, 
+            -5,  0,  0,  0,
+            -5,  0,  0,  0,
+            -5,  0,  0,  0,
+            -5,  0,  0,  0,
+            -5,  0,  0,  0,
+            0,  0,  0,  5, 
+    };
+    
+    public static readonly int[] queensBonusSqaures = {
+            -20,-10,-10, -5, 
+            -10,  0,  0,  0, 
+            -10,  0,  5,  5, 
+            -5,   0,  5,  5,  
+             0,   0,  5,  5,
+            -10,  5,  5,  5, 
+            -10,  0,  5,  0, 
+            -20,-10,-10, -5, 
+    };
+
+    public readonly int[] kingBonusSqaures = {
+            -30,-40,-40,-50,
+            -30,-40,-40,-50,
+            -30,-40,-40,-50,
+            -30,-40,-40,-50,
+            -20,-30,-30,-40,
+            -10,-20,-20,-20,
+            20,  20,  0,  0,
+            20,  30, 10,  0,
+    };
+}
