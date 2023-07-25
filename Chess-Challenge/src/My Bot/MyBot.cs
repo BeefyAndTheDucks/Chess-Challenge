@@ -2,19 +2,19 @@
 using System;
 using static ChessChallenge.API.PieceType;
 using static System.Math;
-// also it says i'm following your cursor, is there a way to stop that I don't know...
+
 public class MyBot : IChessBot
 {
     private Board board; // Cached version of the board
     private Move moveToPlay;
     private bool botIsWhite;
 
-    private readonly int immediateMateScore;
-    private readonly int positiveInfinity;
-    private readonly int negativeInfinity;
-    private readonly int drawScore;
-    private readonly int abortSearchTimeLeftMillis;
-    private readonly int lookForDrawTimeLeftMillis;
+    private readonly int immediateMateScore = 100000;
+    private readonly int positiveInfinity = 9999999;
+    private readonly int negativeInfinity = -9999999;
+    private readonly int drawScore = 10000000;
+    private readonly int abortSearchTimeLeftMillis = 20000;
+    private readonly int lookForDrawTimeLeftMillis = 10000;
 
     private int searchStartMillisRemaining;
 
@@ -28,23 +28,9 @@ public class MyBot : IChessBot
             Search(5, 0, negativeInfinity, positiveInfinity, false, timer);
 
         if (timer.MillisecondsRemaining <= abortSearchTimeLeftMillis)
-            Search(4, 0, negativeInfinity, positiveInfinity, InsufficentMaterial(board.IsWhiteToMove) || timer.MillisecondsRemaining < lookForDrawTimeLeftMillis, timer);
+            Search(4, 0, negativeInfinity, positiveInfinity, (GetPieceCount(Bishop, botIsWhite) + GetPieceCount(Knight, botIsWhite) <= 1 && !(GetPieceCount(Pawn, botIsWhite) > 0 || GetPieceCount(Rook, botIsWhite) > 0 || GetPieceCount(Queen, botIsWhite) > 0)) || timer.MillisecondsRemaining < lookForDrawTimeLeftMillis, timer);
         return moveToPlay;
     }
-
-    public MyBot()
-    {
-        // -- SETTINGS -- \\
-        immediateMateScore = 100000;
-        positiveInfinity = 9999999;
-        negativeInfinity = -positiveInfinity;
-        drawScore = 10000000;
-        abortSearchTimeLeftMillis = 20000;
-        lookForDrawTimeLeftMillis = 10000;
-    }
-    
-    
-
     private int CountMaterial(bool white) =>
         GetPieceCount(Pawn, white) * 100 +
         GetPieceCount(Knight, white) * 300 +
@@ -54,18 +40,6 @@ public class MyBot : IChessBot
 
 
     private int GetPieceCount(PieceType type, bool white) => board.GetPieceList(type, white).Count;
-
-    // Test for insufficient material (Note: not all cases are implemented)
-    public bool InsufficentMaterial(bool friendlyIsWhite)
-    {
-        int numFriendlyMinors = GetPieceCount(Bishop, friendlyIsWhite) + GetPieceCount(Knight, friendlyIsWhite);
-
-        // Lone kings or King vs King + single minor: is insuffient
-        if (numFriendlyMinors <= 1)
-            return true;
-
-        return false;
-    }
 
     private int Search(int depth, int plyFromRoot, int alpha, int beta, bool findDraw, Timer timer)
     {
@@ -122,9 +96,7 @@ public class MyBot : IChessBot
             {
                 alpha = eval;
                 if (plyFromRoot == 0)
-                {
                     moveToPlay = move;
-                }
             }
         }
 
@@ -134,7 +106,7 @@ public class MyBot : IChessBot
     /// Search capture moves until a 'quiet' position is reached.
     private int QuiescenceSearch(int alpha, int beta)
     {
-        int eval = Evaluate(board.IsWhiteToMove);
+        int eval = Evaluate();
         if (eval >= beta)
             return beta;
 
@@ -187,22 +159,15 @@ public class MyBot : IChessBot
         return score;
     }
 
-    private int Evaluate(bool white)
+    private int Evaluate()
     {
         var whiteMaterial = CountMaterial(true);
         var blackMaterial = CountMaterial(false);
-
-        var whiteMaterialWithoutPawns = whiteMaterial - GetPieceCount(Pawn, true) * 100;
-        var blackMaterialWithoutPawns = blackMaterial - GetPieceCount(Pawn, false) * 100;
-
-        var whiteEval = whiteMaterial + EvaluatePieceSquareTables(true, EndgamePhaseWeight(whiteMaterialWithoutPawns));
-        var blackEval = blackMaterial + EvaluatePieceSquareTables(false, EndgamePhaseWeight(blackMaterialWithoutPawns)); // OPTIMIZE TOKENS HERE
-
-        var eval = whiteEval - blackEval; 
-        return eval * ((board.IsWhiteToMove) ? 1 : -1);
+        return (whiteMaterial + EvaluatePieceSquareTables(true, EndgamePhaseWeight(whiteMaterial - GetPieceCount(Pawn, true) * 100)) -
+                    (blackMaterial + EvaluatePieceSquareTables(false, EndgamePhaseWeight(blackMaterial - GetPieceCount(Pawn, false) * 100)))) * (board.IsWhiteToMove ? 1 : -1);
     }
 
-    private float EndgamePhaseWeight(int materialCountWithoutPawns) => 1 - Min(1, materialCountWithoutPawns * 0.0003f);
+    private float EndgamePhaseWeight(int materialCountWithoutPawns) => Min(1, materialCountWithoutPawns * 0.0003f);
 
     private int EvaluatePieceSquareTables(bool white, float endgamePhaseWeight) => 
             EvaluatePieceSquareTable(pawnsBonusSqaures, board.GetPieceList(Pawn, white), white) + 
@@ -210,40 +175,37 @@ public class MyBot : IChessBot
             EvaluatePieceSquareTable(bishopsBonusSqaures, board.GetPieceList(Bishop, white), white) +
             EvaluatePieceSquareTable(rooksBonusSqaures, board.GetPieceList(Rook, white), white) +
             EvaluatePieceSquareTable(queensBonusSqaures, board.GetPieceList(Queen, white), white) + 
-            (int)(ReadPieceSquareTable(kingBonusSqaures, board.GetKingSquare(white), white) * (1 - endgamePhaseWeight));
+            (int)(ReadPieceSquareTable(kingBonusSqaures, board.GetKingSquare(white), white) * endgamePhaseWeight);
     
     private int EvaluatePieceSquareTable(int[] table, PieceList pieceList, bool isWhite)
     {
         var value = 0;
-        for (int i = 0; i < pieceList.Count; i++)
-            value += ReadPieceSquareTable(table, pieceList[i].Square, isWhite);
+        foreach (Piece piece in pieceList)
+            value += ReadPieceSquareTable(table, piece.Square, isWhite);
 
         return value;
     }
 
     private int ReadPieceSquareTable(int[] table, Square square, bool isWhite)
     {
-        var squareIndex = square.Index;
-        
-        if (isWhite) // Below equation taken from discord
-            squareIndex ^= 0b111000; // Flip the table upside down if we are white (i think lol)
+        if (isWhite)
+            square = new (square.Index ^ 0b111000); // Flip the table upside down if we are white
 
-        // Below equation taken from discord
-        return table[(square.File > 3 ? square.File ^ 7 : square.File) + (squareIndex / 8) * 4];
+        return table[(square.File > 3 ? square.File ^ 7 : square.File) + square.Index / 8 * 4];
     }
 
-    public readonly int[] pawnsBonusSqaures = {
-            0,  0,  0,  0, 
+    private readonly int[] pawnsBonusSqaures = {
+            0,   0,  0,  0, 
             50, 50, 50, 50,
             10, 10, 20, 30,
-            5,  5, 10, 25, 
-            0,  0,  0, 20, 
-            5, -5,-10,  0, 
-            5, 10, 10,-20,
-            0,  0,  0,  0, 
+            5,   5, 10, 25, 
+            0,   0,  0, 20, 
+            5,  -5,-10,  0, 
+            5,  10, 10,-20,
+            0,   0,  0,  0, 
     };
-    
-    public readonly int[] knightsBonusSqaures = {
+
+    private readonly int[] knightsBonusSqaures = {
             -50,-40,-30,-30,
             -40,-20,  0,  0,
             -30,  0, 10, 15,
@@ -254,7 +216,7 @@ public class MyBot : IChessBot
             -50,-40,-30,-30,
     };
 
-    public readonly int[] bishopsBonusSqaures = {
+    private readonly int[] bishopsBonusSqaures = {
             -20,-10,-10,-10,
             -10,  0,  0,  0,
             -10,  0,  5, 10,
@@ -265,18 +227,18 @@ public class MyBot : IChessBot
             -20,-10,-10,-10,
     };
 
-    public readonly int[] rooksBonusSqaures = {
-            0,  0,  0,  0, 
-            5, 10, 10, 10, 
+    private readonly int[] rooksBonusSqaures = {
+             0,  0,  0,  0, 
+             5, 10, 10, 10, 
             -5,  0,  0,  0,
             -5,  0,  0,  0,
             -5,  0,  0,  0,
             -5,  0,  0,  0,
             -5,  0,  0,  0,
-            0,  0,  0,  5, 
+             0,  0,  0,  5, 
     };
-    
-    public static readonly int[] queensBonusSqaures = {
+
+    private static readonly int[] queensBonusSqaures = {
             -20,-10,-10, -5, 
             -10,  0,  0,  0, 
             -10,  0,  5,  5, 
@@ -287,7 +249,7 @@ public class MyBot : IChessBot
             -20,-10,-10, -5, 
     };
 
-    public readonly int[] kingBonusSqaures = {
+    private readonly int[] kingBonusSqaures = {
             -30,-40,-40,-50,
             -30,-40,-40,-50,
             -30,-40,-40,-50,
