@@ -1,51 +1,90 @@
 ﻿using ChessChallenge.API;
-using System.Collections.Generic;
-using static System.Math;
+using System;
 using static ChessChallenge.API.PieceType;
+using static System.Math;
 
 public class MyBot : IChessBot
 {
-    // This bot is somehow better when it is black???
+    private Board board; // Cached version of the board
+    private Move moveToPlay;
+    private bool botIsWhite;
 
-    private Board gameBoard;
-    private Move bestMove;
+    private readonly int immediateMateScore = 100000;
+    private readonly int positiveInfinity = 9999999;
+    private readonly int negativeInfinity = -9999999;
+    private readonly int drawScore = 90000;
+    private readonly int abortSearchTimeLeftMillis = 20000;
+    private readonly int lookForDrawTimeLeftMillis = 10000;
 
-    public Move Think(Board board, Timer timer)
+    private int searchStartMillisRemaining;
+
+    public Move Think(Board gameBoard, Timer timer)
     {
-        gameBoard = board;
-        Search((timer.MillisecondsRemaining <= 40000) ? 4 : 5, 0, -9999999, 9999999); // If the time left is below 40.001 seconds, then activate "PANIC MODE" (just reducing the depth to 4)
+        botIsWhite = gameBoard.IsWhiteToMove;
 
-        return bestMove;
+        board = gameBoard; // Cache board
+
+        if (timer.MillisecondsRemaining > abortSearchTimeLeftMillis)
+            Search(5, 0, negativeInfinity, positiveInfinity, false, timer);
+
+        if (timer.MillisecondsRemaining <= abortSearchTimeLeftMillis)
+            Search(4, 0, negativeInfinity, positiveInfinity, (GetPieceCount(Bishop, botIsWhite) + GetPieceCount(Knight, botIsWhite) <= 1 && !(GetPieceCount(Pawn, botIsWhite) > 0 || GetPieceCount(Rook, botIsWhite) > 0 || GetPieceCount(Queen, botIsWhite) > 0)) || timer.MillisecondsRemaining < lookForDrawTimeLeftMillis, timer);
+        return moveToPlay;
     }
+    private int CountMaterial(bool white) =>
+        GetPieceCount(Pawn, white) * 100 +
+        GetPieceCount(Knight, white) * 300 +
+        GetPieceCount(Bishop, white) * 300 +
+        GetPieceCount(Rook, white) * 500 +
+        GetPieceCount(Queen, white) * 900;
 
-    private int Search(int depth, int plyFromRoot, int alpha, int beta)
+
+    private int GetPieceCount(PieceType type, bool white) => board.GetPieceList(type, white).Count;
+
+    private int Search(int depth, int plyFromRoot, int alpha, int beta, bool findDraw, Timer timer)
     {
+        if (plyFromRoot == 0)
+            searchStartMillisRemaining = timer.MillisecondsRemaining;
+
+        if (timer.MillisecondsRemaining <= abortSearchTimeLeftMillis && !findDraw && searchStartMillisRemaining > abortSearchTimeLeftMillis)
+            return 0; // Abort search if the time is running low
+
+        if (board.IsDraw())
+        {
+            if (findDraw && (!board.IsWhiteToMove) == botIsWhite)
+                if (!board.IsWhiteToMove == botIsWhite)
+                    return drawScore;
+                else
+                    return 0;
+        }
+
+
         if (plyFromRoot > 0)
         {
-            if (gameBoard.IsDraw())
-                return 0;
-
-            alpha = Max(alpha, -100000 + plyFromRoot);
-            beta = Min(beta, 100000 - plyFromRoot);
+            alpha = Max(alpha, -10000 + plyFromRoot);
+            beta = Min(beta, immediateMateScore - plyFromRoot);
             if (alpha >= beta)
                 return alpha;
         }
 
         if (depth == 0)
-            return SearchAllCaptures(alpha, beta);
+            return QuiescenceSearch(alpha, beta);
 
-        var moves = GetMoves(false);
+        var moves = board.GetLegalMoves();
         OrderMoves(ref moves);
 
         // Detect checkmate and stalemate when no legal moves are available
-        if (moves.Count == 0)
-            return gameBoard.IsInCheck() ? -100000 + plyFromRoot : 0;
+        if (moves.Length == 0)
+            if (board.IsInCheck())
+                return -immediateMateScore - plyFromRoot;
+            else
+                return 0;
 
         foreach (var move in moves)
         {
-            gameBoard.MakeMove(move);
-            int eval = -Search(depth - 1, plyFromRoot + 1, -beta, -alpha);
-            gameBoard.UndoMove(move);
+            board.MakeMove(move);
+            int eval = -Search(depth - 1, plyFromRoot + 1, -beta, -alpha, findDraw, timer);
+            board.UndoMove(move);
 
             // Move was *too* good, so opponent won't allow this position to be reached
             // (by choosing a different move earlier on). Skip remaining moves.
@@ -57,30 +96,31 @@ public class MyBot : IChessBot
             {
                 alpha = eval;
                 if (plyFromRoot == 0)
-                    bestMove = move;
+                    moveToPlay = move;
             }
         }
 
         return alpha;
     }
 
-    private int SearchAllCaptures(int alpha, int beta)
+    /// Search capture moves until a 'quiet' position is reached.
+    private int QuiescenceSearch(int alpha, int beta)
     {
         int eval = Evaluate();
-
         if (eval >= beta)
             return beta;
 
         if (eval > alpha)
             alpha = eval;
 
-        var moves = GetMoves(true);
+        var moves = board.GetLegalMoves(true);
         OrderMoves(ref moves);
+
         foreach (var move in moves)
         {
-            gameBoard.MakeMove(move);
-            eval = -SearchAllCaptures(-beta, -alpha);
-            gameBoard.UndoMove(move);
+            board.MakeMove(move);
+            eval = -QuiescenceSearch(-beta, -alpha);
+            board.UndoMove(move);
 
             if (eval >= beta)
                 return beta;
@@ -92,147 +132,122 @@ public class MyBot : IChessBot
         return alpha;
     }
 
-    private List<Move> GetMoves(bool onlyCaptures) => new List<Move>(gameBoard.GetLegalMoves(onlyCaptures));
-
-    private int GetPieceValue(PieceType pieceType) =>
-        pieceType switch
-        {
-            Pawn => 100,
-            Knight or Bishop => 300,
-            Rook => 500,
-            Queen => 900,
-            _ => 0,
-        };
-
-    private int GetPieceCount(PieceType type, bool white) => gameBoard.GetPieceList(type, white).Count;
-
-    private void OrderMoves(ref List<Move> moves)
+    private int GetPieceValue(PieceType type) => type switch
     {
-        var scores = new Dictionary<Move, int>();
+        Pawn => 100,
+        Knight or Bishop => 300,
+        Rook => 500,
+        Queen => 900,
+        _ => 0
+    };
 
-        foreach (var move in moves)
-        {
-            var scoreGuess = 0;
+    private void OrderMoves(ref Move[] moves) => Array.Sort(moves, (moveA, moveB) => GetScoreGuess(moveA).CompareTo(GetScoreGuess(moveB)));
 
-            if (move.CapturePieceType != None)
-                scoreGuess = 10 * GetPieceValue(move.MovePieceType) - GetPieceValue(move.CapturePieceType);
+    private int GetScoreGuess(Move move)
+    {
+        var score = 0;
 
-            if (move.IsPromotion)
-                scoreGuess += GetPieceValue(move.PromotionPieceType);
+        if (move.CapturePieceType != None)
+            score = 10 * (GetPieceValue(move.MovePieceType) - GetPieceValue(move.CapturePieceType));
 
-            // If I get more tokens, I should add this:
-            // -- [UNTESTED] -- \\
+        if (move.IsPromotion)
+            score += 10 * GetPieceValue(move.PromotionPieceType);
 
-            // -- OPTIMISATION START -- \\
+        if (board.SquareIsAttackedByOpponent(move.TargetSquare))
+            score -= 5 * GetPieceValue(move.MovePieceType);
 
-            //gameBoard.MakeMove(move);
-            //scoreGuess += Evaluate(); // Unsure if this should be '+=' or '-=' -_-
-            //gameBoard.UndoMove(move);
-
-            // -- OPTIMISATION END -- \\
-
-            scores[move] = scoreGuess;
-        }
-
-        moves.Sort((Move x, Move y) => scores[y].CompareTo(scores[x]));
+        return score;
     }
 
     private int Evaluate()
     {
-        int whiteMaterial = (GetPieceCount(Pawn, true) * 100) +
-                            ((GetPieceCount(Knight, true) +
-                            GetPieceCount(Bishop, true)) * 300) +
-                            (GetPieceCount(Rook, true) * 500) +
-                            (GetPieceCount(Queen, true) * 900);
-
-        return (EvaluatePieceSquareTables(true, EndgamePhaseWeight(-whiteMaterial - GetPieceCount(Pawn, false) * 100)) + whiteMaterial - (EvaluatePieceSquareTables(false, EndgamePhaseWeight(whiteMaterial - GetPieceCount(Pawn, true) * 100)) + -whiteMaterial)) * (gameBoard.IsWhiteToMove ? 1 : -1);
+        var whiteMaterial = CountMaterial(true);
+        var blackMaterial = CountMaterial(false);
+        return 
+            (whiteMaterial + EvaluatePieceSquareTables(true, EndgamePhaseWeight(whiteMaterial - GetPieceCount(Pawn, true) * 100)) -
+            (blackMaterial + EvaluatePieceSquareTables(false, EndgamePhaseWeight(blackMaterial - GetPieceCount(Pawn, false) * 100)))) * (board.IsWhiteToMove ? 1 : -1);
     }
 
     private float EndgamePhaseWeight(int materialCountWithoutPawns) => 1 - Min(1, materialCountWithoutPawns * 0.0003f);
 
-    private int EvaluatePieceSquareTables(bool isWhite, float endgamePhaseWeight) =>
-                EvaluatePieceSquareTable(new int[] {
-        70, 70, 70, 70,
-        50, 50, 50, 50,
-        10, 10, 20, 30,
-        5,  5, 10, 25,
-        0,  0,  0, 20,
-        5, -5, -10, 0,
-        5, 10, 10,-20,
-        0,  0,  0,  0
-    }, gameBoard.GetPieceList(Pawn, isWhite), isWhite) +
-                EvaluatePieceSquareTable(new int[]{
-        -50,-40,-30,-30,
-        -40,-20,  0,  0,
-        -30,  0, 10, 15,
-        -30,  5, 15, 20,
-        -30,  0, 15, 20,
-        -30,  5, 10, 15,
-        -40,-20,  0,  5,
-        -50,-40,-30,-30,
-                }, gameBoard.GetPieceList(Knight, isWhite), isWhite) +
-                EvaluatePieceSquareTable(new int[]{
-        -20,-10,-10,-10,
-        -10,  0,  0,  0,
-        -10,  0,  5, 10,
-        -10,  5,  5, 10,
-        -10,  0, 10, 10,
-        -10, 10, 10, 10,
-        -10,  5,  0,  0,
-        -20,-10,-10,-10,
-    }, gameBoard.GetPieceList(Bishop, isWhite), isWhite) +
-                EvaluatePieceSquareTable(new int[]{
-         0,  0,  0,  0,
-         5, 10, 10, 10,
-        -5,  0,  0,  0,
-        -5,  0,  0,  0,
-        -5,  0,  0,  0,
-        -5,  0,  0,  0,
-        -5,  0,  0,  0,
-         0,  0,  0,  5,
-    }, gameBoard.GetPieceList(Rook, isWhite), isWhite) +
-                EvaluatePieceSquareTable(new int[]{
-        -20,-10,-10, -5,
-        -10,  0,  0,  0,
-        -10,  0,  5,  5,
-        -5,   0,  5,  5,
-         0,   0,  5,  5,
-        -10,  5,  5,  5,
-        -10,  0,  5,  0,
-        -20,-10,-10, -5,
-    }, gameBoard.GetPieceList(Queen, isWhite), isWhite) +
-                (int)(Read(new int[] {
-        -30,-40,-40,-50,
-        -30,-40,-40,-50,
-        -30,-40,-40,-50,
-        -30,-40,-40,-50,
-        -20,-30,-30,-40,
-        -10,-20,-20,-20,
-         20, 20,  0,  0,
-         20, 30, 10,  0,
-    }, gameBoard.GetKingSquare(isWhite), isWhite) * (1 - endgamePhaseWeight));
-
-    // Had to shave tokens... Ended up with this mess
-
-    private int EvaluatePieceSquareTable(int[] table, PieceList pieceList, bool isWhite)
+    private int EvaluatePieceSquareTables(bool white, float endgamePhaseWeight)
     {
-        int value = 0;
-        for (int i = 0; i < pieceList.Count; i++)
-            value += Read(table, pieceList[i].Square, isWhite);
+        var kingSquare = board.GetKingSquare(white);
+
+        return EvaluatePieceSquareTable(ScoreType.Pawn, board.GetPieceList(Pawn, white), white) +
+            EvaluatePieceSquareTable(ScoreType.Knight, board.GetPieceList(Knight, white), white) +
+            EvaluatePieceSquareTable(ScoreType.Bishop, board.GetPieceList(Bishop, white), white) +
+            EvaluatePieceSquareTable(ScoreType.Rook, board.GetPieceList(Rook, white), white) +
+            EvaluatePieceSquareTable(ScoreType.Queen, board.GetPieceList(Queen, white), white) +
+            GetPieceBonusScore((endgamePhaseWeight >= 0.5f) ? (endgamePhaseWeight >= 0.8f) ? ScoreType.KingHunt : ScoreType.KingEndgame : ScoreType.King, white, kingSquare.Rank, kingSquare.File);
+    } 
+    
+    private int EvaluatePieceSquareTable(ScoreType type, PieceList pieceList, bool white)
+    {
+        var value = 0;
+        foreach (Piece piece in pieceList)
+            value += GetPieceBonusScore(type, white, piece.Square.Rank, piece.Square.File);
+
         return value;
     }
 
-    private int Read(int[] table, Square sqr, bool isWhite)
+    //enumeration to keep track externally of 
+    //which byte is for which scores
+    private enum ScoreType { Pawn, Knight, Bishop, Rook, Queen, King, KingEndgame, KingHunt };
+
+    //Assuming you put your packed data table into a table called packedScores.
+    private int GetPieceBonusScore(ScoreType type, bool isWhite, int rank, int file)
     {
-        int square = isWhite ? (7 - sqr.Rank) * 8 + sqr.File : sqr.Index;
+        //Because the arrays are 8x4, we need to mirror across the files.
+        if (file > 3) file = 7 - file;
+        //Additionally, if we're checking black pieces, we need to flip the board vertically.
+        if (!isWhite) rank = 7 - rank;
+        ulong bytemask = 0xFF;
+        //first we shift the mask to select the correct byte              ↓
+        //We then bitwise-and it with PackedScores            ↓
+        //We finally have to "un-shift" the resulting data to properly convert back       ↓
+        //We convert the result to an sbyte, then to an int, to ensure it converts properly.
+        var unpackedData = (int)(sbyte)((packedScores[rank, file] & (bytemask << (int)type)) >> (int)type);
+        //inverting eval scores for black pieces
+        if (!isWhite) unpackedData *= -1;
+        return unpackedData;
+    }
 
-        var squareIndexMod8 = square % 8;
+    private readonly ulong[,] packedScores =
+    {
+        {0x31CDE1EBFFEBCE00, 0x31D7D7F5FFF5D800, 0x31E1D7F5FFF5E200, 0x31EBCDFAFFF5E200},
+        {0x31E1E1F604F5D80A, 0x13EBD80009FFEC0A, 0x13F5D8000A000014, 0x13FFCE000A00001E},
+        {0x31E1E1F5FAF5E232, 0x13F5D80000000032, 0x0013D80500050A32, 0x001DCE05000A0F32},
+        {0x31E1E1FAFAF5E205, 0x13F5D80000050505, 0x001DD80500050F0A, 0xEC27CE05000A1419},
+        {0x31E1EBFFFAF5E200, 0x13F5E20000000000, 0x001DE205000A0F00, 0xEC27D805000A1414},
+        {0x31E1F5F5FAF5E205, 0x13F5EC05000A04FB, 0x0013EC05000A09F6, 0x001DEC05000A0F00},
+        {0x31E213F5FAF5D805, 0x13E214000004EC0A, 0x140000050000000A, 0x14000000000004EC},
+        {0x31CE13EBFFEBCE00, 0x31E21DF5FFF5D800, 0x31E209F5FFF5E200, 0x31E1FFFB04F5E200},
+    };
+}
 
-        square -= 4 * (square / 8);
+/*
+int MinMax (Board board, Timer timer, int, depth, int alpha, int beta, bool maximazingPlayer)
+int bestEval = maximizingPlayer ? -2147483647 : 2147483647;
+foreach (Move currentMove in moves)
+{
 
-        if (squareIndexMod8 > 3)
-            square -= (squareIndexMod8 - 4) * 2 + 1;
+    board.MakeMove(currentMove);
 
-        return table[square];
+    int evaluation = MinMax(board, timer, depth - 1, alpha, beta, !maximizingPlayer);
+    board.UndoMove(currentMove);
+    bestEval = maximizingPlayer ? Math.Max(bestEval, evaluation) : Math.Min(bestEval, evaluation);
+    alpha = maximizingPlayer ? Math.Max(alpha, evaluation) : alpha;
+    beta = maximizingPlayer ? beta : Math.Min(beta, evaluation);
+    if (beta <= alpha)
+    {
+        break;
     }
 }
+
+return bestEval;
+} // this is almost the same code as our current one
+// our current one is just much more optimize
+
+
+*/
